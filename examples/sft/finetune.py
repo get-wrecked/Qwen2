@@ -247,7 +247,7 @@ def make_supervised_data_module(
     # Get the size of the dataset
     dataset_size = len(dataset)
     print(f"Size of the dataset: {dataset_size} samples")
-    dataset = dataset.shuffle(seed=65).select(range(100)) # Only use 1000 samples for quick demo
+    dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
     print (dataset)
 
     def format_chat_template(row):
