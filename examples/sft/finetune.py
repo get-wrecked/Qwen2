@@ -24,6 +24,8 @@ from transformers import (
     deepspeed,
 )
 from transformers.trainer_pt_utils import LabelSmoother
+from datasets import load_dataset
+import wandb
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
@@ -31,6 +33,9 @@ TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'
 
 local_rank = None
 
+# set the WANDB_API_KEY in your env before running this script
+# export WANDB_API_KEY="your_api_key_here"
+wandb.login(key=os.getenv('WANDB_API_KEY'))
 
 def rank0_print(*args):
     if local_rank == 0:
@@ -236,6 +241,46 @@ def make_supervised_data_module(
     data_args,
     max_len,
 ) -> Dict:
+    dataset_name = "ruslanmv/ai-medical-chatbot"
+    #Importing the dataset
+    dataset = load_dataset(dataset_name, split="all")
+    # Get the size of the dataset
+    dataset_size = len(dataset)
+    print(f"Size of the dataset: {dataset_size} samples")
+    dataset = dataset.shuffle(seed=65).select(range(100)) # Only use 1000 samples for quick demo
+    print (dataset)
+
+    def format_chat_template(row):
+        row_json = [{"role": "user", "content": row["Patient"]},
+                {"role": "assistant", "content": row["Doctor"]}]
+        tokenized_output = tokenizer.apply_chat_template(
+                                row_json,
+                                tokenize=True,
+                                add_generation_prompt=False,
+                                padding="max_length",
+                                max_length=max_len,
+                                truncation=True,
+                        )
+        input_ids = torch.tensor(tokenized_output, dtype=torch.int)
+        labels = input_ids.clone()
+        labels[labels == tokenizer.pad_token_id] = IGNORE_TOKEN_ID
+        attention_mask = input_ids.ne(tokenizer.pad_token_id)
+        return dict(
+                    input_ids=input_ids, labels=labels, attention_mask=attention_mask
+                )
+
+    dataset = dataset.map(
+        format_chat_template,
+        num_proc=8,
+    )
+    print (dataset['input_ids'][3])
+    print("Column names in the dataset:", dataset.column_names)
+
+    dataset = dataset.train_test_split(test_size=0.1)
+
+    return dict(train_dataset=dataset["train"], eval_dataset=dataset["test"])
+
+
     """Make dataset and collator for supervised fine-tuning."""
     dataset_cls = (
         LazySupervisedDataset if data_args.lazy_preprocess else SupervisedDataset
@@ -247,6 +292,7 @@ def make_supervised_data_module(
         for line in f:
             train_data.append(json.loads(line))
     train_dataset = dataset_cls(train_data, tokenizer=tokenizer, max_len=max_len)
+    print("Column names in the dataset:", train_dataset)
 
     if data_args.eval_data_path:
         eval_data = []
@@ -299,6 +345,12 @@ def train():
         if training_args.fp16
         else (torch.bfloat16 if training_args.bf16 else torch.float32)
     )
+    run = wandb.init(
+        project='Fine-tune Qwen2 0.5B on Medical Dataset',
+        job_type="training",
+        anonymous="allow"
+    )
+    training_args.report_to = ["wandb"]
 
     # Load model and tokenizer
     config = transformers.AutoConfig.from_pretrained(
