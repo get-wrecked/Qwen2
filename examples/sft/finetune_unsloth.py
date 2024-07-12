@@ -5,7 +5,7 @@ import os
 
 wandb.login(key=os.getenv('WANDB_API_KEY'))
 
-max_seq_length = 2048 # Choose any! We auto support RoPE Scaling internally!
+max_seq_length = 512 # Choose any! We auto support RoPE Scaling internally!
 dtype = None # None for auto detection. Float16 for Tesla T4, V100, Bfloat16 for Ampere+
 load_in_4bit = False # Use 4bit quantization to reduce memory usage. Can be False.
 
@@ -58,18 +58,29 @@ dataset = load_dataset(dataset_name, split="all")
 # Get the size of the dataset
 dataset_size = len(dataset)
 print(f"Size of the dataset: {dataset_size} samples")
-dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
+def check_length(row):
+    # This function checks if the tokenized length is within the max length allowed
+    input_content = tokenizer.encode(row["Patient"] + ' ' + row["Doctor"],
+                                        add_special_tokens=True,
+                                        truncation=False,
+                                        return_length=True,
+                                        max_length=None)
+    return len(input_content) <= max_seq_length - 20 # extra 20 tokens for the chat template
+
+# Filter the dataset to exclude entries that are too long
+dataset = dataset.filter(check_length)
+print(f"Size of the dataset after filtering: {len(dataset)} samples")
 print (dataset)
 
 def format_chat_template(row):
-    row_json = [{"role": "user", "content": str(row["Patient"])},
-            {"role": "assistant", "content": str(row["Doctor"])}]
+    row_json = [{"role": "user", "content": row["Patient"]},
+            {"role": "assistant", "content": row["Doctor"]}]
     tokenized_output = tokenizer.apply_chat_template(
                             row_json,
                             tokenize=True,
                             add_generation_prompt=False,
                             padding="max_length",
-                            max_length=512,
+                            max_length=max_seq_length,
                             truncation=True,
                     )
     input_ids = torch.tensor(tokenized_output, dtype=torch.int)
@@ -84,7 +95,6 @@ dataset = dataset.map(
     format_chat_template,
     # batched = True,
 )
-print (dataset['input_ids'][3])
 print("Column names in the dataset:", dataset.column_names)
 
 dataset = dataset.train_test_split(test_size=0.1)
@@ -123,9 +133,9 @@ trainer = SFTTrainer(
         fp16 = not is_bfloat16_supported(),
         bf16 = is_bfloat16_supported(),
         logging_steps = 1,
-        optim = "adamw_8bit",
+        optim = "adamw_torch",
         weight_decay = 0.01,
-        lr_scheduler_type = "linear",
+        lr_scheduler_type = "cosine",
         seed = 3407,
         output_dir = "outputs",
         report_to = ["wandb"],
