@@ -61,7 +61,7 @@ class DataArguments:
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
-    optim: str = field(default="adamw_torch")
+    optim: str = field(default="paged_adamw_8bit")
     model_max_length: int = field(
         default=8192,
         metadata={
@@ -69,7 +69,6 @@ class TrainingArguments(transformers.TrainingArguments):
         },
     )
     use_lora: bool = False
-
 
 @dataclass
 class LoraArguments:
@@ -175,67 +174,6 @@ def preprocess(
         input_ids=input_ids, target_ids=target_ids, attention_mask=attention_mask
     )
 
-
-class SupervisedDataset(Dataset):
-    """Dataset for supervised fine-tuning."""
-
-    def __init__(
-        self, raw_data, tokenizer: transformers.PreTrainedTokenizer, max_len: int
-    ):
-        super(SupervisedDataset, self).__init__()
-
-        rank0_print("Formatting inputs...")
-        messages = [example["messages"] for example in raw_data]
-        data_dict = preprocess(messages, tokenizer, max_len)
-
-        self.input_ids = data_dict["input_ids"]
-        self.target_ids = data_dict["target_ids"]
-        self.attention_mask = data_dict["attention_mask"]
-
-    def __len__(self):
-        return len(self.input_ids)
-
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        return dict(
-            input_ids=self.input_ids[i],
-            labels=self.target_ids[i],
-            attention_mask=self.attention_mask[i],
-        )
-
-
-class LazySupervisedDataset(Dataset):
-    """Dataset for supervised fine-tuning."""
-
-    def __init__(
-        self, raw_data, tokenizer: transformers.PreTrainedTokenizer, max_len: int
-    ):
-        super(LazySupervisedDataset, self).__init__()
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-
-        rank0_print("Formatting inputs...Skip in lazy mode")
-        self.tokenizer = tokenizer
-        self.raw_data = raw_data
-        self.cached_data_dict = {}
-
-    def __len__(self):
-        return len(self.raw_data)
-
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        if i in self.cached_data_dict:
-            return self.cached_data_dict[i]
-
-        ret = preprocess([self.raw_data[i]["messages"]], self.tokenizer, self.max_len)
-        ret = dict(
-            input_ids=ret["input_ids"][0],
-            labels=ret["target_ids"][0],
-            attention_mask=ret["attention_mask"][0],
-        )
-        self.cached_data_dict[i] = ret
-
-        return ret
-
-
 def make_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args,
@@ -247,7 +185,19 @@ def make_supervised_data_module(
     # Get the size of the dataset
     dataset_size = len(dataset)
     print(f"Size of the dataset: {dataset_size} samples")
-    dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
+#    dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
+    def check_length(row):
+        # This function checks if the tokenized length is within the max length allowed
+        input_content = tokenizer.encode(row["Patient"] + ' ' + row["Doctor"],
+                                            add_special_tokens=True,
+                                            truncation=False,
+                                            return_length=True,
+                                            max_length=None)
+        return len(input_content) <= max_len - 20 # extra 20 tokens for the chat template
+
+    # Filter the dataset to exclude entries that are too long
+    dataset = dataset.filter(check_length)
+    print(f"Size of the dataset after filtering: {len(dataset)} samples")
     print (dataset)
 
     def format_chat_template(row):
@@ -273,38 +223,11 @@ def make_supervised_data_module(
         format_chat_template,
         num_proc=8,
     )
-    print (dataset['input_ids'][3])
     print("Column names in the dataset:", dataset.column_names)
 
     dataset = dataset.train_test_split(test_size=0.1)
 
     return dict(train_dataset=dataset["train"], eval_dataset=dataset["test"])
-
-
-    """Make dataset and collator for supervised fine-tuning."""
-    dataset_cls = (
-        LazySupervisedDataset if data_args.lazy_preprocess else SupervisedDataset
-    )
-    rank0_print("Loading data...")
-
-    train_data = []
-    with open(data_args.data_path, "r") as f:
-        for line in f:
-            train_data.append(json.loads(line))
-    train_dataset = dataset_cls(train_data, tokenizer=tokenizer, max_len=max_len)
-    print("Column names in the dataset:", train_dataset)
-
-    if data_args.eval_data_path:
-        eval_data = []
-        with open(data_args.eval_data_path, "r") as f:
-            for line in f:
-                eval_data.append(json.loads(line))
-        eval_dataset = dataset_cls(eval_data, tokenizer=tokenizer, max_len=max_len)
-    else:
-        eval_dataset = None
-
-    return dict(train_dataset=train_dataset, eval_dataset=eval_dataset)
-
 
 def train():
     global local_rank
@@ -345,9 +268,24 @@ def train():
         if training_args.fp16
         else (torch.bfloat16 if training_args.bf16 else torch.float32)
     )
+    wandb_run_id_path = os.path.join(training_args.output_dir, 'wandb_run_id.txt')
+    if os.path.exists(wandb_run_id_path):
+        with open(wandb_run_id_path, 'r') as f:
+            wandb_run_id = f.read().strip()
+        resume = 'allow'
+        rank0_print(f"Resuming WandB run: {wandb_run_id}")
+    else:
+        wandb_run_id = wandb.util.generate_id()
+        with open(wandb_run_id_path, 'w') as f:
+            f.write(wandb_run_id)
+        resume = None
+        rank0_print(f"Starting new WandB run: {wandb_run_id}")
+
     run = wandb.init(
         project='Fine-tune Qwen2 0.5B on Medical Dataset',
         job_type="training",
+        id=wandb_run_id,
+        resume=resume,
         anonymous="allow"
     )
     training_args.report_to = ["wandb"]
@@ -419,7 +357,7 @@ def train():
     # Check this issue https://github.com/huggingface/peft/issues/746 for more information.
     if (
         list(pathlib.Path(training_args.output_dir).glob("checkpoint-*"))
-        and not training_args.use_lora
+#        and not training_args.use_lora
     ):
         trainer.train(resume_from_checkpoint=True)
     else:
