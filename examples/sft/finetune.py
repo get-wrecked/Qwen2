@@ -272,27 +272,28 @@ def train():
         if training_args.fp16
         else (torch.bfloat16 if training_args.bf16 else torch.float32)
     )
-    wandb_run_id_path = os.path.join(training_args.output_dir, 'wandb_run_id.txt')
-    if os.path.exists(wandb_run_id_path):
-        with open(wandb_run_id_path, 'r') as f:
-            wandb_run_id = f.read().strip()
-        resume = 'allow'
-        rank0_print(f"Resuming WandB run: {wandb_run_id}")
-    else:
-        wandb_run_id = wandb.util.generate_id()
-        # create training_args.output_dir if it doesn't exist
-        if not os.path.exists(training_args.output_dir):
-            os.makedirs(training_args.output_dir)
-        with open(wandb_run_id_path, 'w') as f:
-            f.write(wandb_run_id)
-        resume = None
-        rank0_print(f"Starting new WandB run: {wandb_run_id}")
+    # wandb_run_id_path = os.path.join(training_args.output_dir, 'wandb_run_id.txt')
+    # if os.path.exists(wandb_run_id_path):
+    #     with open(wandb_run_id_path, 'r') as f:
+    #         wandb_run_id = f.read().strip()
+    #     resume = 'allow'
+    #     rank0_print(f"Resuming WandB run: {wandb_run_id}")
+    # else:
+    #     wandb_run_id = wandb.util.generate_id()
+    #     # create training_args.output_dir if it doesn't exist
+    #     if not os.path.exists(training_args.output_dir):
+    #         os.makedirs(training_args.output_dir)
+    #     with open(wandb_run_id_path, 'w') as f:
+    #         f.write(wandb_run_id)
+    #     resume = None
+    #     rank0_print(f"Starting new WandB run: {wandb_run_id}")
 
     run = wandb.init(
         project='Fine-tune Qwen2 1.5B on OCR dataset',
         job_type="training",
-        id=wandb_run_id,
-        resume=resume,
+        group="DDP",
+        # id=wandb_run_id,
+        # resume=resume,
         anonymous="allow"
     )
     training_args.report_to = ["wandb"]
