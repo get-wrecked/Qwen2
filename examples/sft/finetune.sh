@@ -84,13 +84,13 @@ torchrun $DISTRIBUTED_ARGS finetune.py \
     --bf16 True \
     --output_dir output_qwen \
     --num_train_epochs 5 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 8 \
     --evaluation_strategy "epoch" \
     --save_strategy "steps" \
-    --save_steps 10 \
-    --save_total_limit 10 \
+    --save_steps 100 \
+    --save_total_limit 5 \
     --learning_rate 1e-5 \
     --weight_decay 0.01 \
     --adam_beta2 0.95 \
@@ -98,7 +98,7 @@ torchrun $DISTRIBUTED_ARGS finetune.py \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
     --report_to "none" \
-    --model_max_length 512 \
+    --model_max_length 4096 \
     --lazy_preprocess True \
     --use_lora ${USE_LORA} \
     --q_lora ${Q_LORA} \

@@ -179,16 +179,19 @@ def make_supervised_data_module(
     data_args,
     max_len,
 ) -> Dict:
-    dataset_name = "ruslanmv/ai-medical-chatbot"
+    dataset_name = "tryhighlight/ocr_task_dataset"
     #Importing the dataset
     dataset = load_dataset(dataset_name, split="all")
+    print (dataset)
+
     # Get the size of the dataset
     dataset_size = len(dataset)
     print(f"Size of the dataset: {dataset_size} samples")
+    system_prompt = "You are a helpful ai assistant. User will provide full name followed by the OCR content of his/her computer screen. Looking at the OCR, first detect if there are any email or messaging or any other kind of conversations in it. If yes, then detect if there are any TODOs that the above user has to complete as a result of the conversation. If yes, just provide a short single line task that can be directly added to the todo list. If there is no converstaion detected or no task detected in the conversation as a TODO, just output the exact phrase \"No task\"."
 #    dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
     def check_length(row):
         # This function checks if the tokenized length is within the max length allowed
-        input_content = tokenizer.encode(row["Patient"] + ' ' + row["Doctor"],
+        input_content = tokenizer.encode(system_prompt + row["NAME"] + row["OCR"] + row["TASK"],
                                             add_special_tokens=True,
                                             truncation=False,
                                             return_length=True,
@@ -198,11 +201,12 @@ def make_supervised_data_module(
     # Filter the dataset to exclude entries that are too long
     dataset = dataset.filter(check_length)
     print(f"Size of the dataset after filtering: {len(dataset)} samples")
-    print (dataset)
 
     def format_chat_template(row):
-        row_json = [{"role": "user", "content": row["Patient"]},
-                {"role": "assistant", "content": row["Doctor"]}]
+        row_json = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "My name is " + row["NAME"] + " \n" + row["OCR"]},
+                {"role": "assistant", "content": row["TASK"]}]
         tokenized_output = tokenizer.apply_chat_template(
                                 row_json,
                                 tokenize=True,
@@ -276,13 +280,16 @@ def train():
         rank0_print(f"Resuming WandB run: {wandb_run_id}")
     else:
         wandb_run_id = wandb.util.generate_id()
+        # create training_args.output_dir if it doesn't exist
+        if not os.path.exists(training_args.output_dir):
+            os.makedirs(training_args.output_dir)
         with open(wandb_run_id_path, 'w') as f:
             f.write(wandb_run_id)
         resume = None
         rank0_print(f"Starting new WandB run: {wandb_run_id}")
 
     run = wandb.init(
-        project='Fine-tune Qwen2 0.5B on Medical Dataset',
+        project='Fine-tune Qwen2 1.5B on OCR dataset',
         job_type="training",
         id=wandb_run_id,
         resume=resume,
