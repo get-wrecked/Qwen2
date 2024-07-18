@@ -144,36 +144,6 @@ def safe_save_model_for_hf_trainer(
     if trainer.args.should_save and trainer.args.local_rank == 0:
         trainer._save(output_dir, state_dict=state_dict)
 
-
-def preprocess(
-    messages,
-    tokenizer: transformers.PreTrainedTokenizer,
-    max_len: int,
-) -> Dict:
-    """Preprocesses the data for supervised fine-tuning."""
-
-    texts = []
-    for i, msg in enumerate(messages):
-        texts.append(
-            tokenizer.apply_chat_template(
-                msg,
-                chat_template=TEMPLATE,
-                tokenize=True,
-                add_generation_prompt=False,
-                padding="max_length",
-                max_length=max_len,
-                truncation=True,
-            )
-        )
-    input_ids = torch.tensor(texts, dtype=torch.int)
-    target_ids = input_ids.clone()
-    target_ids[target_ids == tokenizer.pad_token_id] = IGNORE_TOKEN_ID
-    attention_mask = input_ids.ne(tokenizer.pad_token_id)
-
-    return dict(
-        input_ids=input_ids, target_ids=target_ids, attention_mask=attention_mask
-    )
-
 def make_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args,
@@ -219,6 +189,12 @@ def make_supervised_data_module(
         labels = input_ids.clone()
         labels[labels == tokenizer.pad_token_id] = IGNORE_TOKEN_ID
         attention_mask = input_ids.ne(tokenizer.pad_token_id)
+        eos_indices = (input_ids == tokenizer.eos_token_id).nonzero(as_tuple=True)[0]
+        if len(eos_indices) > 0:
+            first_eos_index = eos_indices[0]
+            labels[first_eos_index] = tokenizer.eos_token_id
+            attention_mask[first_eos_index] = 1
+
         return dict(
                     input_ids=input_ids, labels=labels, attention_mask=attention_mask
                 )
