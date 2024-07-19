@@ -173,10 +173,11 @@ def make_supervised_data_module(
     print(f"Size of the dataset after filtering: {len(dataset)} samples")
 
     def format_chat_template(row):
+        task_prefix = "Task : " if row["TASK"] != "No task" else ""
         row_json = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "My name is " + row["NAME"] + " \n" + row["OCR"]},
-                {"role": "assistant", "content": row["TASK"]}]
+                {"role": "assistant", "content": task_prefix + row["TASK"]}]
         tokenized_output = tokenizer.apply_chat_template(
                                 row_json,
                                 tokenize=True,
