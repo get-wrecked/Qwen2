@@ -148,20 +148,21 @@ def make_supervised_data_module(
     tokenizer: transformers.PreTrainedTokenizer,
     data_args,
     max_len,
-) -> Dict:
-    dataset_name = "tryhighlight/ocr_task_dataset"
+    split
+):
+    dataset_name = "tryhighlight/task_dataset"
     #Importing the dataset
-    dataset = load_dataset(dataset_name, split="all")
+    dataset = load_dataset(dataset_name, split=split)
     print (dataset)
 
     # Get the size of the dataset
     dataset_size = len(dataset)
     print(f"Size of the dataset: {dataset_size} samples")
-    system_prompt = "You are a helpful ai assistant. User will provide full name followed by the OCR content of his/her computer screen. Looking at the OCR, first detect if there are any email or messaging or any other kind of conversations in it. If yes, then detect if there are any TODOs that the above user has to complete as a result of the conversation. If yes, just provide a short single line task that can be directly added to the todo list. If there is no converstaion detected or no task detected in the conversation as a TODO, just output the exact phrase \"No task\"."
+    system_prompt = "You are a helpful ai assistant. User will provide full name followed by some email or messaging conversation seen on his/her computer screen. Looking at the conversation, detect if there are any TODOs that the above user has to complete as a result of the conversation. If yes, just provide the short single line task that can be directly added to the todo list. If there is no task detected as a TODO, just output the exact phrase \"No task\". If the conversation is about a promotional or advertisement related, please output \"No task\". If the conversation is directed or addressed to someone else, then output \"No task\"."
 #    dataset = dataset.shuffle(seed=65).select(range(10000)) # Only use 1000 samples for quick demo
     def check_length(row):
         # This function checks if the tokenized length is within the max length allowed
-        input_content = tokenizer.encode(system_prompt + row["NAME"] + row["OCR"] + row["TASK"],
+        input_content = tokenizer.encode(system_prompt + row["NAME"] + row["CONVERSATION"] + row["TASK"],
                                             add_special_tokens=True,
                                             truncation=False,
                                             return_length=True,
@@ -173,11 +174,10 @@ def make_supervised_data_module(
     print(f"Size of the dataset after filtering: {len(dataset)} samples")
 
     def format_chat_template(row):
-        task_prefix = "Task : " if row["TASK"] != "No task" else ""
         row_json = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": "My name is " + row["NAME"] + " \n" + row["OCR"]},
-                {"role": "assistant", "content": task_prefix + row["TASK"]}]
+                {"role": "user", "content": "My name is " + row["NAME"] + " \n" + row["CONVERSATION"]},
+                {"role": "assistant", "content": row["TASK"]}]
         tokenized_output = tokenizer.apply_chat_template(
                                 row_json,
                                 tokenize=True,
@@ -206,9 +206,7 @@ def make_supervised_data_module(
     )
     print("Column names in the dataset:", dataset.column_names)
 
-    dataset = dataset.train_test_split(test_size=0.1)
-
-    return dict(train_dataset=dataset["train"], eval_dataset=dataset["test"])
+    return dataset
 
 def train():
     global local_rank
@@ -266,7 +264,7 @@ def train():
     #     rank0_print(f"Starting new WandB run: {wandb_run_id}")
 
     run = wandb.init(
-        project='Fine-tune Qwen2 1.5B on OCR dataset',
+        project='Fine-tune Phi3 mini on task dataset',
         job_type="training",
         group="DDP",
         # id=wandb_run_id,
@@ -328,13 +326,16 @@ def train():
             model.enable_input_require_grads()
 
     # Load data
-    data_module = make_supervised_data_module(
-        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length
+    train_dataset = make_supervised_data_module(
+        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length, split="train"
+    )
+    eval_dataset = make_supervised_data_module(
+        tokenizer=tokenizer, data_args=data_args, max_len=training_args.model_max_length, split="test"
     )
 
     # Start trainer
     trainer = Trainer(
-        model=model, tokenizer=tokenizer, args=training_args, **data_module
+        model=model, tokenizer=tokenizer, args=training_args, train_dataset=train_dataset, eval_dataset=eval_dataset
     )
 
     # `not training_args.use_lora` is a temporary workaround for the issue that there are problems with
